@@ -1,0 +1,15 @@
+name: whisper
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+    - setuptools-rust
+    - faster-whisper
+    - openai-whisper
+    - fastapi
+    - openai
+    - python-dotenv 
+    - uvicorn  
