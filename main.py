@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+视频爆点提取脚本
+用法: python main.py -v <视频文件> [-o <输出目录>] [-g <分组大小>]
+"""
+import argparse
 import json
 from faster_whisper import WhisperModel
 from tqdm import tqdm
@@ -9,13 +15,10 @@ import os
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 API_URL = os.getenv("API_URL")
+
 # ============ 配置 ============
-# 支持视频(.mp4等)或音频(.mp3等)文件
-INPUT_PATH = "geekerwan.mp4"  # 输入文件路径
-OUTPUT_DIR = "output2"
 MODEL_NAME = "small"  # tiny, base, small, medium, large
 LANGUAGE = "zh"
-GROUP_SIZE = 8  # 每多少句合并一个段落
 
 # ============ SYSTEM_PROMPT ============
 SYSTEM_PROMPT = """你是一个视频内容分析专家。你的任务是从转录文本中识别出最精彩、最有爆点（吸引眼球、引发讨论）的片段。
@@ -55,6 +58,7 @@ def get_api_client():
         api_key=API_KEY,
         base_url=API_URL
     )
+
 
 # ============ 媒体转换函数 ============
 def is_video(file_path: str) -> bool:
@@ -150,7 +154,7 @@ def transcribe_audio(audio_path: str, model_name: str = MODEL_NAME, language: st
     return results
 
 
-def merge_by_count(segments: list[dict], group_size: int = GROUP_SIZE, sep: str = " ") -> list[dict]:
+def merge_by_count(segments: list[dict], group_size: int = 8, sep: str = " ") -> list[dict]:
     """
     将转录结果按数量合并成段落
 
@@ -276,13 +280,14 @@ def clip_video(video_path: str, start: float, end: float, output_path: str):
         print(f"裁剪失败: {result.stderr}")
 
 
-def process_video(video_path: str, output_dir: str = OUTPUT_DIR):
+def process_video(video_path: str, output_dir: str, group_size: int):
     """
     完整处理流程：视频转音频 -> 转录 -> 分析 -> 裁剪
 
     Args:
         video_path: 视频/音频文件路径
         output_dir: 输出目录
+        group_size: 每多少句合并成一个段落（方便可视化）
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -316,8 +321,8 @@ def process_video(video_path: str, output_dir: str = OUTPUT_DIR):
     print(f"原始转录结果已保存: {transcription_path}")
 
     # 2. 合并段落
-    merged_segments = merge_by_count(transcription_results, group_size=GROUP_SIZE)
-    print(f"合并后共 {len(merged_segments)} 个段落")
+    merged_segments = merge_by_count(transcription_results, group_size=group_size)
+    print(f"合并后共 {len(merged_segments)} 个段落（每 {group_size} 句为一段）")
 
     # 保存合并后的转录
     merged_path = os.path.join(output_dir, "transcription_merged.json")
@@ -329,7 +334,7 @@ def process_video(video_path: str, output_dir: str = OUTPUT_DIR):
     print("\n" + "=" * 50)
     print("步骤 2: 分析爆点")
     print("=" * 50)
-    highlights = analyze_highlights(merged_segments)
+    highlights = analyze_highlights(transcription_results)
 
     if not highlights:
         print("未找到爆点，取消裁剪")
@@ -365,4 +370,52 @@ def process_video(video_path: str, output_dir: str = OUTPUT_DIR):
 
 # ============ 主程序 ============
 if __name__ == "__main__":
-    process_video(INPUT_PATH)
+    parser = argparse.ArgumentParser(
+        description="视频爆点提取脚本 - 从视频中提取精彩片段",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python main.py -v video.mp4
+  python main.py -v video.mp4 -o ./output
+  python main.py -v video.mp4 -o ./output -g 10
+
+输出文件:
+  - audio_extract.mp3: 提取的音频
+  - transcription_raw.json: 原始转录
+  - transcription_merged.json: 合并后的转录
+  - highlights.json: 爆点分析结果
+  - clip_*.mp4: 裁剪后的视频片段
+        """
+    )
+
+    parser.add_argument(
+        "-v", "--video",
+        required=True,
+        help="输入视频文件路径（必需）"
+    )
+
+    parser.add_argument(
+        "-o", "--output",
+        default="./output",
+        help="输出目录（默认: ./output）"
+    )
+
+    parser.add_argument(
+        "-g", "--group",
+        type=int,
+        default=8,
+        help="合并多少句为一段，方便可视化（默认: 8）"
+    )
+
+    args = parser.parse_args()
+
+    # 检查视频文件是否存在
+    if not os.path.exists(args.video):
+        print(f"错误: 视频文件不存在: {args.video}")
+        exit(1)
+
+    print(f"视频文件: {args.video}")
+    print(f"输出目录: {args.output}")
+    print(f"分组大小: {args.group} 句/段")
+
+    process_video(args.video, args.output, args.group)
