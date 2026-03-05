@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-视频爆点提取脚本
-用法: python main.py -v <视频文件> [-o <输出目录>] [-g <分组大小>]
+视频爆点提取脚本 - 交互式版本
+用法: python main.py
 """
 import argparse
 import json
+import os
 from faster_whisper import WhisperModel
 from tqdm import tqdm
 import subprocess
 from openai import OpenAI
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
@@ -19,6 +19,29 @@ API_URL = os.getenv("API_URL")
 # ============ 配置 ============
 MODEL_NAME = "small"  # tiny, base, small, medium, large
 LANGUAGE = "zh"
+
+# ============ 全局模型（懒加载）===========
+_global_model = None
+
+
+def get_model():
+    """获取或加载模型（单例模式）"""
+    global _global_model
+    if _global_model is None:
+        print(f"正在加载 Whisper 模型: {MODEL_NAME} ...")
+        _global_model = WhisperModel(MODEL_NAME, device="cuda", compute_type="float16")
+        print("模型加载完成！")
+    return _global_model
+
+
+def unload_model():
+    """卸载模型"""
+    global _global_model
+    if _global_model is not None:
+        del _global_model
+        _global_model = None
+        print("模型已卸载")
+
 
 # ============ SYSTEM_PROMPT ============
 SYSTEM_PROMPT = """你是一个视频内容分析专家。你的任务是从转录文本中识别出最精彩、最有爆点（吸引眼球、引发讨论）的片段。
@@ -122,8 +145,8 @@ def transcribe_audio(audio_path: str, model_name: str = MODEL_NAME, language: st
     Returns:
         list: 转录结果列表 [{start, end, text}, ...]
     """
-    print(f"正在加载模型: {model_name}...")
-    model = WhisperModel(model_name, device="cuda", compute_type="float16")
+    # 使用全局模型（已加载）
+    model = get_model()
 
     total_duration = get_duration(audio_path)
     print(f"开始转录: {audio_path}")
@@ -334,7 +357,7 @@ def process_video(video_path: str, output_dir: str, group_size: int):
     print("\n" + "=" * 50)
     print("步骤 2: 分析爆点")
     print("=" * 50)
-    highlights = analyze_highlights(transcription_results)
+    highlights = analyze_highlights(merged_segments)
 
     if not highlights:
         print("未找到爆点，取消裁剪")
@@ -368,54 +391,124 @@ def process_video(video_path: str, output_dir: str, group_size: int):
     print("=" * 50)
 
 
+def get_user_input():
+    """获取用户输入的视频文件路径"""
+    print("\n" + "=" * 50)
+    video_path = input("请输入视频文件路径: ").strip()
+
+    if not video_path:
+        print("错误: 文件路径不能为空")
+        return None
+
+    if not os.path.exists(video_path):
+        print(f"错误: 文件不存在: {video_path}")
+        return None
+
+    # 获取输出目录
+    output_dir = input("请输入输出目录 (直接回车使用默认 ./output): ").strip()
+    if not output_dir:
+        output_dir = "./output"
+
+    # 获取分组大小
+    group_str = input("请输入分组大小 - 合并多少句为一段 (直接回车使用默认 8): ").strip()
+    group_size = 8
+    if group_str:
+        try:
+            group_size = int(group_str)
+            if group_size < 1:
+                print("错误: 分组大小必须大于 0，使用默认值 8")
+                group_size = 8
+        except ValueError:
+            print("错误: 输入无效，使用默认值 8")
+            group_size = 8
+
+    return video_path, output_dir, group_size
+
+
+def main_loop():
+    """主循环"""
+    print("\n" + "=" * 60)
+    print("  视频爆点提取工具 - 交互式版本")
+    print("=" * 60)
+    print("模型将在首次使用时加载，后续复用")
+    print("输入 q 或 quit 退出程序\n")
+
+    model_loaded = False
+
+    while True:
+        print("\n" + "-" * 40)
+        user_input = input("请选择操作: [回车]执行新任务  [q]退出: ").strip().lower()
+
+        if user_input == 'q' or user_input == 'quit':
+            print("\n正在退出...")
+            if model_loaded:
+                unload_model()
+            print("再见!")
+            break
+
+        # 执行新任务
+        result = get_user_input()
+        if result is None:
+            continue
+
+        video_path, output_dir, group_size = result
+
+        print(f"\n开始处理...")
+        print(f"  视频文件: {video_path}")
+        print(f"  输出目录: {output_dir}")
+        print(f"  分组大小: {group_size}")
+
+        try:
+            process_video(video_path, output_dir, group_size)
+            model_loaded = True  # 标记模型已加载
+        except KeyboardInterrupt:
+            print("\n\n任务被中断")
+        except Exception as e:
+            print(f"\n处理出错: {e}")
+
+        print("\n任务完成!")
+
+
 # ============ 主程序 ============
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="视频爆点提取脚本 - 从视频中提取精彩片段",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例:
-  python main.py -v video.mp4
-  python main.py -v video.mp4 -o ./output
-  python main.py -v video.mp4 -o ./output -g 10
+    # 检查命令行参数
+    if len(os.sys.argv) > 1:
+        # 使用命令行模式
+        parser = argparse.ArgumentParser(
+            description="视频爆点提取脚本",
+            formatter_class=argparse.RawDescriptionHelpFormatter
+        )
 
-输出文件:
-  - audio_extract.mp3: 提取的音频
-  - transcription_raw.json: 原始转录
-  - transcription_merged.json: 合并后的转录
-  - highlights.json: 爆点分析结果
-  - clip_*.mp4: 裁剪后的视频片段
-        """
-    )
+        parser.add_argument(
+            "-v", "--video",
+            required=True,
+            help="输入视频文件路径（必需）"
+        )
 
-    parser.add_argument(
-        "-v", "--video",
-        required=True,
-        help="输入视频文件路径（必需）"
-    )
+        parser.add_argument(
+            "-o", "--output",
+            default="./output",
+            help="输出目录（默认: ./output）"
+        )
 
-    parser.add_argument(
-        "-o", "--output",
-        default="./output",
-        help="输出目录（默认: ./output）"
-    )
+        parser.add_argument(
+            "-g", "--group",
+            type=int,
+            default=8,
+            help="合并多少句为一段（默认: 8）,可以根据视频内容调整，过大可能导致爆点分析不准确，过小可能增加API token消耗"
+        )
 
-    parser.add_argument(
-        "-g", "--group",
-        type=int,
-        default=8,
-        help="合并多少句为一段，方便可视化（默认: 8）"
-    )
+        args = parser.parse_args()
 
-    args = parser.parse_args()
+        if not os.path.exists(args.video):
+            print(f"错误: 视频文件不存在: {args.video}")
+            exit(1)
 
-    # 检查视频文件是否存在
-    if not os.path.exists(args.video):
-        print(f"错误: 视频文件不存在: {args.video}")
-        exit(1)
+        print(f"视频文件: {args.video}")
+        print(f"输出目录: {args.output}")
+        print(f"分组大小: {args.group}")
 
-    print(f"视频文件: {args.video}")
-    print(f"输出目录: {args.output}")
-    print(f"分组大小: {args.group} 句/段")
-
-    process_video(args.video, args.output, args.group)
+        process_video(args.video, args.output, args.group)
+    else:
+        # 使用交互模式
+        main_loop()
